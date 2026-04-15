@@ -4,7 +4,7 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getFirestore, collection, addDoc, onSnapshot, query, doc, deleteDoc, updateDoc } from 'firebase/firestore';
 
-// --- 1. Firebase 및 환경 설정 ---
+// --- 1. Firebase 및 스타일 긴급 설정 ---
 const getFirebaseConfig = () => {
   if (typeof __firebase_config !== 'undefined' && __firebase_config) {
     return JSON.parse(__firebase_config);
@@ -21,21 +21,16 @@ const getFirebaseConfig = () => {
 };
 
 const firebaseConfig = getFirebaseConfig();
+// 경로 안정화 (슬래시 제거)
 const rawAppId = typeof __app_id !== 'undefined' ? __app_id : '26school-co2';
-
-/**
- * [오류 수정: 세그먼트 경로 문제 해결]
- * appId에 '/'가 포함되어 있으면 Firestore가 이를 경로 구분자로 인식하여 6세그먼트 오류를 냅니다.
- * '_'로 치환하여 안정적인 5세그먼트 경로(/artifacts/{appId}/public/data/{collection})를 만듭니다.
- */
 const appId = rawAppId.replace(/\//g, '_');
 
-// Firebase 서비스 초기화
+// Firebase 초기화
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// --- 2. 학교 도면 데이터 (1, 2, 3층) ---
+// --- 2. 학교 도면 데이터 ---
 const schoolStructure = {
   3: { label: "3층", rooms: [
     { id: "3-sci", name: "과학실", x: 52, y: 12 },
@@ -111,17 +106,15 @@ const App = () => {
   const [newPpm, setNewPpm] = useState("");
   const [editingId, setEditingId] = useState(null);
 
-  // 긴급 스타일 로드 (Vite 빌드 시 Tailwind가 빠지는 경우 대비)
+  // [중요: 스타일 긴급 로드] 
+  // 빌드 환경에 상관없이 Tailwind 스타일을 강제로 주입합니다.
   useEffect(() => {
-    if (!document.getElementById('tailwind-cdn')) {
-      const script = document.createElement('script');
-      script.id = 'tailwind-cdn';
-      script.src = 'https://cdn.tailwindcss.com';
-      document.head.appendChild(script);
-    }
+    const link = document.createElement('script');
+    link.src = 'https://cdn.tailwindcss.com';
+    document.head.appendChild(link);
   }, []);
 
-  // 인증 시퀀스 (RULE 3 준수)
+  // [인증 처리 - RULE 3 준수]
   useEffect(() => {
     const initAuth = async () => {
       try {
@@ -130,38 +123,33 @@ const App = () => {
         } else {
           await signInAnonymously(auth);
         }
-      } catch (e) { 
-        console.error("Auth initialization failed:", e); 
-      }
+      } catch (e) { console.error("Auth error:", e); }
     };
     initAuth();
-    const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
-      setUser(currentUser);
-    });
+    const unsubscribe = onAuthStateChanged(auth, setUser);
     return () => unsubscribe();
   }, []);
 
-  // 데이터 실시간 구독 (권한 에러 방지 가드 적용)
+  // [데이터 구독 - 권한 오류 방지]
   useEffect(() => {
-    if (!user || !user.uid) return; 
-
+    if (!user) return; // 유저 인증 전에는 데이터베이스에 접근하지 않음
+    
     const q = collection(db, 'artifacts', appId, 'public', 'data', 'co2_measurements');
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setMeasurements(data);
-    }, (error) => {
-      console.error("Firebase Snapshot Error:", error.message);
+    }, (err) => {
+      console.warn("권한 부족 또는 설정 오류:", err.message);
     });
     return () => unsubscribe();
   }, [user]);
 
-  // 대기질 상태 판단
   const getAirQuality = (ppm) => {
     const p = parseInt(ppm);
-    if (p <= 450) return { color: "bg-emerald-500", text: "매우 쾌적", textCol: "text-emerald-600" };
+    if (p <= 450) return { color: "bg-emerald-500", text: "쾌적", textCol: "text-emerald-600" };
     if (p <= 1000) return { color: "bg-green-400", text: "보통", textCol: "text-green-600" };
-    if (p <= 2000) return { color: "bg-amber-400", text: "환기 필요", textCol: "text-amber-600" };
-    return { color: "bg-rose-500", text: "매우 나쁨", textCol: "text-rose-600" };
+    if (p <= 2000) return { color: "bg-amber-400", text: "환기", textCol: "text-amber-600" };
+    return { color: "bg-rose-500", text: "나쁨", textCol: "text-rose-600" };
   };
 
   const filteredData = useMemo(() => {
@@ -196,7 +184,10 @@ const App = () => {
       }
       setNewPpm(""); setSelectedRoom(null); setStudentName("");
       setMeasureDate(new Date().toISOString().split('T')[0]);
-    } catch (e) { console.error("Save Error:", e); }
+    } catch (e) { 
+      console.error("저장 실패:", e);
+      alert("데이터를 저장할 권한이 없습니다. Firebase 규칙을 확인해주세요.");
+    }
   };
 
   const startEdit = (m) => {
@@ -220,7 +211,7 @@ const App = () => {
     if (!user || !window.confirm("이 기록을 정말 삭제하시겠습니까?")) return;
     try {
       await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'co2_measurements', id));
-    } catch (e) { console.error("Delete Error:", e); }
+    } catch (e) { console.error("삭제 실패:", e); }
   };
 
   return (
@@ -232,7 +223,7 @@ const App = () => {
             <div>
               <h1 className="text-xl md:text-2xl font-black tracking-tight text-slate-800">우리 학교 CO2 분포도</h1>
               <p className="text-slate-500 font-bold text-xs mt-0.5 flex items-center gap-2">
-                <Users size={12}/> 실시간 데이터 공유 (로그인: {user ? '완료' : '진행중'})
+                <Users size={12}/> 실시간 탐사 공유 시스템 (ID: {user?.uid?.substring(0, 5) || '인증중'})
               </p>
             </div>
           </div>
@@ -253,7 +244,6 @@ const App = () => {
 
         <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
           <div className="xl:col-span-3 space-y-6">
-            {/* 지도 구역 - 처음의 쾌적한 크기로 복구 */}
             <div className="bg-white p-4 md:p-6 rounded-[2.5rem] shadow-xl relative aspect-[25/11] border-2 border-slate-100 overflow-hidden shadow-inner bg-slate-50/50">
                 <div className="absolute top-4 left-4 z-20 flex flex-col gap-3 text-left">
                   <div className="bg-slate-900 text-white px-5 py-2 rounded-xl font-black text-sm shadow-xl flex items-center gap-2 border border-slate-700">
@@ -282,7 +272,6 @@ const App = () => {
                   {Array.from({length: 200}).map((_, i) => <div key={i} className="border-r border-b border-slate-900"></div>)}
                 </div>
 
-                {/* 장소 버튼 - 글자 및 사각형 크기를 처음 상태(컴팩트)로 복구 */}
                 {schoolStructure[selectedFloor].rooms.map(room => {
                   const data = floorMapData[room.id];
                   const quality = data ? getAirQuality(data.ppm) : null;
@@ -292,7 +281,7 @@ const App = () => {
                     <button key={room.id} onClick={() => setSelectedRoom(room)} 
                       style={{ left: `${room.x}%`, top: `${room.y}%` }}
                       className={`absolute transform -translate-x-1/2 -translate-y-1/2 w-16 md:w-28 h-9 md:h-12 border rounded-xl text-[9px] md:text-[12px] font-bold transition-all flex items-center justify-center px-1 text-center leading-tight
-                        ${isSelected ? 'border-blue-600 ring-4 ring-blue-50 z-50 scale-105 shadow-xl bg-blue-50' : 'bg-white border-slate-200 hover:border-blue-300 text-slate-700 shadow-sm'}`}>
+                        ${isSelected ? 'border-blue-600 ring-4 ring-blue-100 z-50 scale-105 shadow-xl bg-blue-50' : 'bg-white border-slate-200 hover:border-blue-300 text-slate-700 shadow-sm'}`}>
                       {room.name}
                       {data && (
                         <div className="absolute -top-4 -right-4 z-40">
@@ -306,16 +295,15 @@ const App = () => {
                 })}
             </div>
 
-            {/* 입력 섹션 */}
             <div className={`bg-white p-5 rounded-2xl shadow-xl border-2 transition-all ${editingId ? 'border-orange-500 ring-4 ring-orange-50' : selectedRoom ? 'border-blue-500 ring-4 ring-blue-50' : 'border-slate-100'}`}>
                <div className="flex items-center justify-between mb-4">
                   <h3 className="font-black text-slate-700 text-sm flex items-center gap-2">
-                    {editingId ? <Edit3 size={16} className="text-orange-500"/> : <Plus size={16} className="text-blue-500"/>}
-                    {editingId ? "탐사 기록 수정" : "새로운 측정값 기록"}
-                    {selectedRoom && <span className="text-blue-600 bg-blue-50 px-2 py-0.5 rounded-lg ml-1 font-bold">📍 {selectedRoom.name}</span>}
+                    {editingId ? <Edit3 size={16} className="text-orange-500"/> : <Plus size={16} className="text-indigo-500"/>}
+                    {editingId ? "탐사 기록 수정" : "새 측정 데이터 기록"}
+                    {selectedRoom && <span className="text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-lg ml-1 font-bold">📍 {selectedRoom.name}</span>}
                   </h3>
                   {editingId && (
-                    <button onClick={cancelEdit} className="text-[10px] font-bold text-slate-400 hover:text-slate-600 flex items-center gap-1 transition-colors">
+                    <button onClick={cancelEdit} className="text-[10px] font-bold text-slate-400 hover:text-slate-600 flex items-center gap-1">
                       <X size={12}/> 취소
                     </button>
                   )}
@@ -323,15 +311,15 @@ const App = () => {
                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 items-end text-left">
                   <div className="space-y-1">
                     <label className="text-[10px] font-black text-slate-400 tracking-wider">측정 날짜</label>
-                    <input type="date" value={measureDate} onChange={e => setMeasureDate(e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs outline-none focus:border-blue-500 transition-all shadow-inner" />
+                    <input type="date" value={measureDate} onChange={e => setMeasureDate(e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs outline-none focus:border-indigo-500 transition-all shadow-inner" />
                   </div>
                   <div className="space-y-1">
                     <label className="text-[10px] font-black text-slate-400 tracking-wider">탐사대원 성명</label>
-                    <input type="text" value={studentName} onChange={e => setStudentName(e.target.value)} placeholder="이름" disabled={!selectedRoom} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs outline-none focus:border-blue-500 disabled:opacity-50 transition-all shadow-inner" />
+                    <input type="text" value={studentName} onChange={e => setStudentName(e.target.value)} placeholder="이름" disabled={!selectedRoom} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs outline-none focus:border-indigo-500 disabled:opacity-50 transition-all shadow-inner" />
                   </div>
                   <div className="space-y-1">
                     <label className="text-[10px] font-black text-slate-400 tracking-wider">농도 (PPM)</label>
-                    <input type="number" value={newPpm} onChange={e => setNewPpm(e.target.value)} placeholder="0" disabled={!selectedRoom} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-black text-blue-600 text-sm outline-none focus:border-blue-500 disabled:opacity-50 transition-all shadow-inner" />
+                    <input type="number" value={newPpm} onChange={e => setNewPpm(e.target.value)} placeholder="0" disabled={!selectedRoom} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-black text-blue-600 text-sm outline-none focus:border-indigo-500 disabled:opacity-50 transition-all shadow-inner" />
                   </div>
                   <button onClick={handleSaveData} disabled={!selectedRoom || !newPpm || !studentName} className={`h-[42px] rounded-xl font-black text-white text-xs transition-all shadow-md ${(!selectedRoom || !newPpm || !studentName) ? 'bg-slate-200 shadow-none' : editingId ? 'bg-orange-500 hover:bg-orange-600' : 'bg-blue-600 hover:bg-blue-700 active:scale-95 shadow-indigo-100'}`}>
                     {editingId ? "저장하기" : "공유 및 전송"}
@@ -340,15 +328,14 @@ const App = () => {
             </div>
           </div>
           
-          {/* 실시간 로그 */}
           <div className="xl:col-span-1 bg-slate-900 rounded-[2rem] p-5 text-white overflow-hidden flex flex-col h-[600px] md:max-h-[85vh] shadow-2xl text-left border border-slate-800">
             <h2 className="font-black text-lg mb-6 flex justify-between items-center">
-               <div className="flex items-center gap-2"><Building2 size={18} className="text-indigo-400"/> 탐사 실황</div>
+               <div className="flex items-center gap-2"><Building2 size={18} className="text-indigo-400"/> 실시간 로그</div>
                <span className="text-[10px] bg-indigo-500/20 text-indigo-400 px-2 py-0.5 rounded-full font-bold border border-indigo-500/30">{filteredData.length}건</span>
             </h2>
             <div className="flex-1 overflow-y-auto space-y-4 pr-1 scrollbar-hide">
               {!user ? (
-                <div className="text-slate-600 text-center py-20 font-bold text-xs italic animate-pulse">인증 확인 중...</div>
+                <div className="text-slate-600 text-center py-20 font-bold text-xs italic animate-pulse">로그인 확인 중...</div>
               ) : filteredData.length === 0 ? (
                 <div className="text-slate-600 text-center py-20 font-bold text-xs italic">데이터를 기다리는 중...</div>
               ) : (
@@ -362,14 +349,14 @@ const App = () => {
                         {isOwnRecord && (
                           <div className="flex gap-2 opacity-0 group-hover:opacity-100 transition-opacity">
                             <button onClick={() => startEdit(m)} className="text-blue-400 hover:text-white" title="수정"><Edit3 size={12}/></button>
-                            <button onClick={() => handleDelete(m.id)} className="text-rose-500 hover:text-white" title="삭제"><Trash2 size={12}/></button>
+                            <button onClick={() => handleDelete(m.id)} className="text-rose-500 hover:text-rose-400" title="삭제"><Trash2 size={12}/></button>
                           </div>
                         )}
                       </div>
                       <div className="font-black text-white text-xs">{m.roomName} <span className="text-[9px] text-slate-500 ml-1">({m.floor}F)</span></div>
                       <div className="flex justify-between items-center mt-2">
                         <div className="flex items-center gap-1.5">
-                          <span className="bg-slate-700 text-blue-300 text-[7px] px-1.5 py-0.5 rounded-md font-black uppercase">{m.classGroup}</span>
+                          <span className="bg-slate-700 text-blue-300 text-[7px] px-1.5 py-0.5 rounded-md font-black uppercase tracking-tighter">{m.classGroup}</span>
                           <span className="text-[10px] text-slate-400 font-bold">{m.student}</span>
                         </div>
                         <div className="flex flex-col items-end">
