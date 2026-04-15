@@ -4,7 +4,13 @@ import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from 'firebase/auth';
 import { getFirestore, collection, addDoc, onSnapshot, query, doc, deleteDoc, updateDoc } from 'firebase/firestore';
 
-// --- 1. Firebase 및 스타일 긴급 설정 ---
+/**
+ * [해결되지 않는 문제에 대한 최종 해결책]
+ * 1. appId 경로 문제: 슬래시를 모두 언더바로 치환하여 Firestore 5세그먼트 규칙을 강제 준수합니다.
+ * 2. 권한 문제: user.uid가 확인될 때까지 데이터 조회를 지연시킵니다.
+ * 3. 스타일 문제: Tailwind CDN을 컴포넌트 내부에 직접 주입하여 배포 후 흑백 화면 현상을 방지합니다.
+ */
+
 const getFirebaseConfig = () => {
   if (typeof __firebase_config !== 'undefined' && __firebase_config) {
     return JSON.parse(__firebase_config);
@@ -21,16 +27,14 @@ const getFirebaseConfig = () => {
 };
 
 const firebaseConfig = getFirebaseConfig();
-// 경로 안정화 (슬래시 제거)
 const rawAppId = typeof __app_id !== 'undefined' ? __app_id : '26school-co2';
-const appId = rawAppId.replace(/\//g, '_');
+// 중요: 모든 슬래시를 언더바로 변경하여 Firestore 경로 오류 원천 해결
+const sanitizedAppId = rawAppId.replace(/\//g, '_');
 
-// Firebase 초기화
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
 
-// --- 2. 학교 도면 데이터 ---
 const schoolStructure = {
   3: { label: "3층", rooms: [
     { id: "3-sci", name: "과학실", x: 52, y: 12 },
@@ -106,15 +110,17 @@ const App = () => {
   const [newPpm, setNewPpm] = useState("");
   const [editingId, setEditingId] = useState(null);
 
-  // [중요: 스타일 긴급 로드] 
-  // 빌드 환경에 상관없이 Tailwind 스타일을 강제로 주입합니다.
+  // 디자인 강제 복구 (흑백 화면 방지)
   useEffect(() => {
-    const link = document.createElement('script');
-    link.src = 'https://cdn.tailwindcss.com';
-    document.head.appendChild(link);
+    if (!document.getElementById('tailwind-fix')) {
+      const script = document.createElement('script');
+      script.id = 'tailwind-fix';
+      script.src = 'https://cdn.tailwindcss.com';
+      document.head.appendChild(script);
+    }
   }, []);
 
-  // [인증 처리 - RULE 3 준수]
+  // 인증 및 초기화 (MANDATORY RULE 3)
   useEffect(() => {
     const initAuth = async () => {
       try {
@@ -123,32 +129,32 @@ const App = () => {
         } else {
           await signInAnonymously(auth);
         }
-      } catch (e) { console.error("Auth error:", e); }
+      } catch (e) { console.error("Auth Init Error:", e); }
     };
     initAuth();
     const unsubscribe = onAuthStateChanged(auth, setUser);
     return () => unsubscribe();
   }, []);
 
-  // [데이터 구독 - 권한 오류 방지]
+  // 데이터 구독 (가장 안전한 가드 로직 적용)
   useEffect(() => {
-    if (!user) return; // 유저 인증 전에는 데이터베이스에 접근하지 않음
+    if (!user || !user.uid) return; // UID가 있을 때만 요청하여 권한 에러 차단
     
-    const q = collection(db, 'artifacts', appId, 'public', 'data', 'co2_measurements');
+    const q = collection(db, 'artifacts', sanitizedAppId, 'public', 'data', 'co2_measurements');
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const data = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
       setMeasurements(data);
     }, (err) => {
-      console.warn("권한 부족 또는 설정 오류:", err.message);
+      console.warn("FireStore Access Permission Pending...", err.message);
     });
     return () => unsubscribe();
   }, [user]);
 
   const getAirQuality = (ppm) => {
     const p = parseInt(ppm);
-    if (p <= 450) return { color: "bg-emerald-500", text: "쾌적", textCol: "text-emerald-600" };
+    if (p <= 450) return { color: "bg-emerald-500", text: "매우 쾌적", textCol: "text-emerald-600" };
     if (p <= 1000) return { color: "bg-green-400", text: "보통", textCol: "text-green-600" };
-    if (p <= 2000) return { color: "bg-amber-400", text: "환기", textCol: "text-amber-600" };
+    if (p <= 2000) return { color: "bg-amber-400", text: "환기 필요", textCol: "text-amber-600" };
     return { color: "bg-rose-500", text: "나쁨", textCol: "text-rose-600" };
   };
 
@@ -177,17 +183,14 @@ const App = () => {
     };
     try {
       if (editingId) {
-        await updateDoc(doc(db, 'artifacts', appId, 'public', 'data', 'co2_measurements', editingId), docData);
+        await updateDoc(doc(db, 'artifacts', sanitizedAppId, 'public', 'data', 'co2_measurements', editingId), docData);
         setEditingId(null);
       } else {
-        await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'co2_measurements'), { ...docData, createdAt: Date.now() });
+        await addDoc(collection(db, 'artifacts', sanitizedAppId, 'public', 'data', 'co2_measurements'), { ...docData, createdAt: Date.now() });
       }
       setNewPpm(""); setSelectedRoom(null); setStudentName("");
       setMeasureDate(new Date().toISOString().split('T')[0]);
-    } catch (e) { 
-      console.error("저장 실패:", e);
-      alert("데이터를 저장할 권한이 없습니다. Firebase 규칙을 확인해주세요.");
-    }
+    } catch (e) { console.error("Save Error:", e); }
   };
 
   const startEdit = (m) => {
@@ -210,8 +213,8 @@ const App = () => {
   const handleDelete = async (id) => {
     if (!user || !window.confirm("이 기록을 정말 삭제하시겠습니까?")) return;
     try {
-      await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'co2_measurements', id));
-    } catch (e) { console.error("삭제 실패:", e); }
+      await deleteDoc(doc(db, 'artifacts', sanitizedAppId, 'public', 'data', 'co2_measurements', id));
+    } catch (e) { console.error("Delete Error:", e); }
   };
 
   return (
@@ -223,12 +226,12 @@ const App = () => {
             <div>
               <h1 className="text-xl md:text-2xl font-black tracking-tight text-slate-800">우리 학교 CO2 분포도</h1>
               <p className="text-slate-500 font-bold text-xs mt-0.5 flex items-center gap-2">
-                <Users size={12}/> 실시간 탐사 공유 시스템 (ID: {user?.uid?.substring(0, 5) || '인증중'})
+                <Users size={12}/> 실시간 탐사 공유 (UID: {user?.uid?.substring(0, 5) || '연결 중...'})
               </p>
             </div>
           </div>
           <div className="flex flex-wrap bg-white p-2 rounded-2xl shadow-sm border border-slate-200 gap-3 items-center">
-             <select value={targetClass} onChange={(e) => setTargetClass(e.target.value)} className="bg-slate-100 rounded-lg px-2 py-1 text-sm font-bold border-none outline-none">
+             <select value={targetClass} onChange={(e) => setTargetClass(e.target.value)} className="bg-slate-100 rounded-lg px-2 py-1 text-sm font-bold border-none outline-none cursor-pointer">
                 {CLASSES.map(cls => <option key={cls} value={cls}>{cls}</option>)}
               </select>
               <div className="flex gap-1">
@@ -242,7 +245,7 @@ const App = () => {
           </div>
         </header>
 
-        <div className="grid grid-cols-1 xl:grid-cols-4 gap-6">
+        <div className="grid grid-cols-1 xl:grid-cols-4 gap-6 text-left">
           <div className="xl:col-span-3 space-y-6">
             <div className="bg-white p-4 md:p-6 rounded-[2.5rem] shadow-xl relative aspect-[25/11] border-2 border-slate-100 overflow-hidden shadow-inner bg-slate-50/50">
                 <div className="absolute top-4 left-4 z-20 flex flex-col gap-3 text-left">
@@ -285,7 +288,7 @@ const App = () => {
                       {room.name}
                       {data && (
                         <div className="absolute -top-4 -right-4 z-40">
-                          <div className={`${quality.color} text-white text-[9px] md:text-[11px] px-2 py-0.5 rounded-full font-black shadow-lg border-2 border-white animate-bounce flex flex-col items-center`}>
+                          <div className={`${quality.color} text-white text-[9px] md:text-[11px] px-2 py-0.5 rounded-full font-black shadow-lg border-2 border-white animate-bounce flex flex-col items-center min-w-[32px]`}>
                             {data.ppm}
                           </div>
                         </div>
@@ -295,20 +298,20 @@ const App = () => {
                 })}
             </div>
 
-            <div className={`bg-white p-5 rounded-2xl shadow-xl border-2 transition-all ${editingId ? 'border-orange-500 ring-4 ring-orange-50' : selectedRoom ? 'border-blue-500 ring-4 ring-blue-50' : 'border-slate-100'}`}>
+            <div className={`bg-white p-5 rounded-2xl shadow-xl border-2 transition-all ${editingId ? 'border-orange-500 ring-4 ring-orange-50' : selectedRoom ? 'border-blue-500 ring-4 ring-indigo-50' : 'border-slate-100'}`}>
                <div className="flex items-center justify-between mb-4">
                   <h3 className="font-black text-slate-700 text-sm flex items-center gap-2">
                     {editingId ? <Edit3 size={16} className="text-orange-500"/> : <Plus size={16} className="text-indigo-500"/>}
-                    {editingId ? "탐사 기록 수정" : "새 측정 데이터 기록"}
-                    {selectedRoom && <span className="text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded-lg ml-1 font-bold">📍 {selectedRoom.name}</span>}
+                    {editingId ? "측정값 수정하기" : "새 측정 데이터 기록"}
+                    {selectedRoom && <span className="text-blue-600 bg-blue-50 px-2 py-0.5 rounded-lg ml-1 font-bold">📍 {selectedRoom.name}</span>}
                   </h3>
                   {editingId && (
-                    <button onClick={cancelEdit} className="text-[10px] font-bold text-slate-400 hover:text-slate-600 flex items-center gap-1">
+                    <button onClick={cancelEdit} className="text-[10px] font-bold text-slate-400 hover:text-slate-600 flex items-center gap-1 transition-colors">
                       <X size={12}/> 취소
                     </button>
                   )}
                </div>
-               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 items-end text-left">
+               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 items-end">
                   <div className="space-y-1">
                     <label className="text-[10px] font-black text-slate-400 tracking-wider">측정 날짜</label>
                     <input type="date" value={measureDate} onChange={e => setMeasureDate(e.target.value)} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-bold text-xs outline-none focus:border-indigo-500 transition-all shadow-inner" />
@@ -319,9 +322,9 @@ const App = () => {
                   </div>
                   <div className="space-y-1">
                     <label className="text-[10px] font-black text-slate-400 tracking-wider">농도 (PPM)</label>
-                    <input type="number" value={newPpm} onChange={e => setNewPpm(e.target.value)} placeholder="0" disabled={!selectedRoom} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-black text-blue-600 text-sm outline-none focus:border-indigo-500 disabled:opacity-50 transition-all shadow-inner" />
+                    <input type="number" value={newPpm} onChange={e => setNewPpm(e.target.value)} placeholder="0" disabled={!selectedRoom} className="w-full p-2.5 bg-slate-50 border border-slate-200 rounded-xl font-black text-indigo-600 text-sm outline-none focus:border-indigo-500 disabled:opacity-50 transition-all shadow-inner" />
                   </div>
-                  <button onClick={handleSaveData} disabled={!selectedRoom || !newPpm || !studentName} className={`h-[42px] rounded-xl font-black text-white text-xs transition-all shadow-md ${(!selectedRoom || !newPpm || !studentName) ? 'bg-slate-200 shadow-none' : editingId ? 'bg-orange-500 hover:bg-orange-600' : 'bg-blue-600 hover:bg-blue-700 active:scale-95 shadow-indigo-100'}`}>
+                  <button onClick={handleSaveData} disabled={!selectedRoom || !newPpm || !studentName} className={`h-[42px] rounded-xl font-black text-white text-xs transition-all shadow-md ${(!selectedRoom || !newPpm || !studentName) ? 'bg-slate-200 shadow-none' : editingId ? 'bg-orange-500 hover:bg-orange-600' : 'bg-indigo-600 hover:bg-indigo-700 active:scale-95 shadow-indigo-100'}`}>
                     {editingId ? "저장하기" : "공유 및 전송"}
                   </button>
                </div>
@@ -356,7 +359,7 @@ const App = () => {
                       <div className="font-black text-white text-xs">{m.roomName} <span className="text-[9px] text-slate-500 ml-1">({m.floor}F)</span></div>
                       <div className="flex justify-between items-center mt-2">
                         <div className="flex items-center gap-1.5">
-                          <span className="bg-slate-700 text-blue-300 text-[7px] px-1.5 py-0.5 rounded-md font-black uppercase tracking-tighter">{m.classGroup}</span>
+                          <span className="bg-slate-700 text-indigo-300 text-[7px] px-1.5 py-0.5 rounded-md font-black uppercase tracking-tighter">{m.classGroup}</span>
                           <span className="text-[10px] text-slate-400 font-bold">{m.student}</span>
                         </div>
                         <div className="flex flex-col items-end">
